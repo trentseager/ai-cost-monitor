@@ -30,7 +30,7 @@ There is no test suite, linter, or build step configured in this repo currently.
 
 ## Architecture
 
-Four files, each a distinct layer:
+Each file is a distinct layer:
 
 - `main.py` — FastAPI app. Two proxy routes (`/anthropic/v1/messages`, `/openai/v1/chat/completions`) that both funnel through `_proxy_request()`, plus `/admin/*` endpoints.
 - `providers.py` — per-provider manifest (`PROVIDERS` dict): upstream URL to forward to, and an `extract_usage(body) -> (model, tokens_in, tokens_out) | None` function that pulls usage out of that provider's response shape. Route paths intentionally mirror each provider's real API path exactly, so a dev changes only their SDK's `base_url` — no other client code changes.
