@@ -28,7 +28,7 @@ see "Future work" in [credit-reserve-settle.md](credit-reserve-settle.md).
 
 - [x] [Admin dashboard](admin-dashboard.md) — built (per-user table + charts)
 - [x] Rate-limit config/status section — built, see [admin-dashboard.md](admin-dashboard.md)
-- [ ] Credit balance / reservation view — not yet added to the dashboard (admin API exists: `/admin/credits`)
+- [x] Credit balance / reservation view — built, see [admin-dashboard.md](admin-dashboard.md)
 - [x] [Users overview (directory + 7d/30d avg spend)](user-overview.md) — built, replaced the per-user table
 
 ## Research & positioning (reference, not features — no checkbox)

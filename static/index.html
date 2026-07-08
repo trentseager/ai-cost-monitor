@@ -67,6 +67,20 @@
     <tbody></tbody>
   </table>
 
+  <h2>Credit balances</h2>
+  <form class="rate-limit-form" id="creditForm">
+    <input type="text" id="crUserId" placeholder="user id" required>
+    <input type="number" id="crAmount" placeholder="amount (USD)" min="0.01" step="0.01" required>
+    <button type="submit">Add credit</button>
+  </form>
+  <div id="creditStatus"></div>
+
+  <table id="creditTable" style="display:none">
+    <thead><tr><th>User ID</th><th>Balance</th><th>Pending reserved</th><th>Total</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="caption">Balance already excludes any in-flight (pending) reservations — Total is what's left if every pending request were fully released.</div>
+
   <div class="charts">
     <canvas id="costChart"></canvas>
     <canvas id="tokensChart"></canvas>
@@ -75,6 +89,7 @@
 <script>
 document.getElementById('loadBtn').addEventListener('click', load);
 document.getElementById('rateLimitForm').addEventListener('submit', submitRateLimit);
+document.getElementById('creditForm').addEventListener('submit', submitCredit);
 
 let adminKey = '';
 
@@ -83,13 +98,14 @@ async function load() {
   const status = document.getElementById('status');
   const headers = { 'X-Admin-Key': adminKey };
 
-  const [usersRes, totalsRes, rateLimitsRes] = await Promise.all([
+  const [usersRes, totalsRes, rateLimitsRes, creditsRes] = await Promise.all([
     fetch('/admin/users', { headers }),
     fetch('/admin/daily-totals', { headers }),
     fetch('/admin/rate-limits', { headers }),
+    fetch('/admin/credits', { headers }),
   ]);
 
-  if (usersRes.status === 401 || totalsRes.status === 401 || rateLimitsRes.status === 401) {
+  if (usersRes.status === 401 || totalsRes.status === 401 || rateLimitsRes.status === 401 || creditsRes.status === 401) {
     status.textContent = 'Invalid admin key.';
     return;
   }
@@ -98,10 +114,12 @@ async function load() {
   const users = await usersRes.json();
   const totals = await totalsRes.json();
   const rateLimits = await rateLimitsRes.json();
+  const credits = await creditsRes.json();
 
   renderUserTable(users);
   renderCharts(totals);
   renderRateLimitTable(rateLimits);
+  renderCreditTable(credits);
 }
 
 async function loadUsers() {
@@ -153,6 +171,61 @@ async function submitRateLimit(e) {
   }
 
   await loadRateLimits();
+}
+
+async function loadCredits() {
+  const res = await fetch('/admin/credits', { headers: { 'X-Admin-Key': adminKey } });
+  if (!res.ok) return;
+  renderCreditTable(await res.json());
+}
+
+async function submitCredit(e) {
+  e.preventDefault();
+  const crStatus = document.getElementById('creditStatus');
+  crStatus.textContent = '';
+  crStatus.classList.remove('error');
+
+  const payload = {
+    user_id: document.getElementById('crUserId').value,
+    amount_usd: Number(document.getElementById('crAmount').value),
+  };
+
+  const res = await fetch('/admin/credits', {
+    method: 'POST',
+    headers: { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    crStatus.textContent = body.detail || `Request failed (${res.status})`;
+    crStatus.classList.add('error');
+    return;
+  }
+
+  await loadCredits();
+}
+
+function renderCreditTable(credits) {
+  const table = document.getElementById('creditTable');
+  const tbody = table.querySelector('tbody');
+  tbody.innerHTML = '';
+  if (credits.length === 0) {
+    table.style.display = 'none';
+    return;
+  }
+  table.style.display = '';
+  for (const c of credits) {
+    const total = c.balance_usd + c.pending_reserved_usd;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${c.user_id}</td>
+      <td>$${c.balance_usd.toFixed(4)}</td>
+      <td>$${c.pending_reserved_usd.toFixed(4)}</td>
+      <td>$${total.toFixed(4)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
 }
 
 function renderRateLimitTable(configs) {
