@@ -65,7 +65,10 @@ CREATE TABLE IF NOT EXISTS user_labels (
 
 @contextmanager
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    # timeout=30: the sqlite3 default (5s) isn't enough headroom under real
+    # concurrent write bursts — see docs/credit-reserve-settle.md's load-test
+    # findings, where the default caused "database is locked" errors.
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -76,6 +79,9 @@ def get_conn():
 
 def init_db():
     with get_conn() as conn:
+        # WAL persists in the DB file's header once set — no need to
+        # re-issue on every connection, just here at startup.
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
 
 

@@ -116,7 +116,42 @@ unmetered" in [[daily-limits]].
   blocked by the daily limit never reaches the credit logic, confirming the
   two mechanisms are layered as designed, not one replacing the other.
 
-## Future work (after this spec is built and functional — do not start early)
+## Verified under concurrent load (2026-07-08)
+
+The atomic-UPDATE reasoning above had only ever been exercised by
+single-request manual tests. Load-tested directly against `db.py`
+(real OS threads, real concurrent SQLite connections to the same file —
+the same shape of contention multiple uvicorn worker processes would
+produce), bypassing FastAPI/asyncio entirely so the test stresses the
+actual write layer, not single-event-loop scheduling:
+
+- **`reserve_credit`**: 200 concurrent threads against a fixed starting
+  balance, repeated across multiple runs — reservation count exactly
+  matched `floor(balance / cost)` every time, final balance was always
+  exact and never negative, zero `sqlite3.OperationalError`s. The
+  double-spend-prevention logic holds under load, as designed.
+- **`settle_reservation`**: initially did **not** hold up. 100 reservations
+  settled concurrently threw `sqlite3.OperationalError: database is
+  locked` on 0–25 of them per run (reproducible, not a fluke) — `get_conn()`
+  opened a bare `sqlite3.connect(DB_PATH)` with the sqlite3 default 5s busy
+  timeout and no WAL mode, which wasn't enough headroom under real write
+  bursts. This wasn't a logical race (no double-refunds, no lost balance
+  overall beyond the failed calls) — it was an unhandled exception that
+  would propagate out of `settle_reservation` mid-request in production,
+  after the provider had already responded to the caller, silently leaving
+  that one reservation stuck `pending` and its refund never applied.
+- **Fix** (`db.py`'s `get_conn()`/`init_db()`): enabled WAL journal mode
+  (set once at startup, persists in the DB file's header) and raised the
+  connection timeout to 30s. This is infrastructure shared by every table,
+  not credit-specific, so it also hardens `reserve_rate_limit`/
+  `release_rate_limit` and the daily-limit path against the same class of
+  issue. Re-ran the same load test 5 more times post-fix: zero errors
+  across all runs. No change to the atomic-UPDATE business logic itself —
+  this only fixes how the underlying SQLite engine handles contention.
+
+**Gate cleared** — see "Future work" below, no longer blocked.
+
+## Future work
 
 1. **Stripe Meters API sync** — push settled per-user actual cost/usage
    events to Stripe so a founder's own end-customer billing reflects real
@@ -126,8 +161,3 @@ unmetered" in [[daily-limits]].
    rollup once more than 2 providers exist, aggregating the existing
    per-provider `requests` rows into one blended per-customer view.
    Addresses pain #4 in [[billing-pain-points]].
-
-Both are deliberately out of scope until reserve/settle itself is built,
-tested, and proven correct under concurrent load — building billing-sync
-or reporting on top of a not-yet-trustworthy balance mechanism would just
-compound bugs.

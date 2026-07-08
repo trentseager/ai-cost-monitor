@@ -18,8 +18,11 @@ status. Update the checkbox here whenever a doc's own `Status:` line changes.
 
 ## Billing / monetization (post-credit follow-ons)
 
-Deliberately deferred until reserve/settle is proven correct under load —
-see "Future work" in [credit-reserve-settle.md](credit-reserve-settle.md).
+Were deferred until reserve/settle was proven correct under concurrent
+load — that gate cleared 2026-07-08 (found and fixed a real "database is
+locked" issue under load in the process; see "Verified under concurrent
+load" in [credit-reserve-settle.md](credit-reserve-settle.md)). Both items
+below are now unblocked, not yet started.
 
 - [ ] Stripe Meters API sync — not yet spec'd as its own doc
 - [ ] Unified per-customer cost ledger across providers — not yet spec'd as its own doc
