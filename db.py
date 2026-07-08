@@ -1,5 +1,7 @@
 import sqlite3
+import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "usage.db"
@@ -35,6 +37,23 @@ CREATE TABLE IF NOT EXISTS reservations (
     provider TEXT NOT NULL,
     reserved_usd REAL NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending'
+);
+
+CREATE TABLE IF NOT EXISTS rate_limit_configs (
+    user_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    limit_type TEXT NOT NULL,
+    limit_value INTEGER NOT NULL,
+    window_seconds INTEGER NOT NULL,
+    PRIMARY KEY (user_id, provider)
+);
+
+CREATE TABLE IF NOT EXISTS rate_limit_windows (
+    user_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    window_start TEXT NOT NULL,
+    used_value INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, provider, window_start)
 );
 """
 
@@ -202,6 +221,96 @@ def credit_summaries() -> list[dict]:
             """
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def _window_start(window_seconds: int) -> str:
+    """Fixed-window bucket start, floored to the nearest `window_seconds`
+    boundary. Computed in Python because SQLite's datetime() can't cleanly
+    floor to an arbitrary N-second bucket the way date('now') does for
+    whole days elsewhere in this file."""
+    bucket_epoch = (int(time.time()) // window_seconds) * window_seconds
+    return datetime.fromtimestamp(bucket_epoch, tz=timezone.utc).isoformat()
+
+
+def get_rate_limit_config(user_id: str, provider: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT limit_type, limit_value, window_seconds FROM rate_limit_configs "
+            "WHERE user_id = ? AND provider = ?",
+            (user_id, provider),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def set_rate_limit(user_id: str, provider: str, limit_type: str, limit_value: int, window_seconds: int):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO rate_limit_configs (user_id, provider, limit_type, limit_value, window_seconds)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, provider) DO UPDATE SET
+                limit_type = excluded.limit_type,
+                limit_value = excluded.limit_value,
+                window_seconds = excluded.window_seconds
+            """,
+            (user_id, provider, limit_type, limit_value, window_seconds),
+        )
+
+
+def reserve_rate_limit(user_id: str, provider: str, config: dict, amount: int) -> dict | None:
+    """Atomically reserve `amount` units against the current fixed window's
+    budget. Returns {"window_start", "reserved_amount"} on success, or None
+    if that would exceed limit_value."""
+    window_start = _window_start(config["window_seconds"])
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO rate_limit_windows (user_id, provider, window_start, used_value) "
+            "VALUES (?, ?, ?, 0) ON CONFLICT(user_id, provider, window_start) DO NOTHING",
+            (user_id, provider, window_start),
+        )
+        cur = conn.execute(
+            "UPDATE rate_limit_windows SET used_value = used_value + ? "
+            "WHERE user_id = ? AND provider = ? AND window_start = ? AND used_value + ? <= ?",
+            (amount, user_id, provider, window_start, amount, config["limit_value"]),
+        )
+        if cur.rowcount == 0:
+            return None
+        return {"window_start": window_start, "reserved_amount": amount}
+
+
+def release_rate_limit(user_id: str, provider: str, hold: dict, amount: int):
+    """Give back `amount` units to the window the hold was reserved in
+    (used both to fully undo a hold and to refund unused token headroom on
+    settle). Clamped at 0 — a window that already rolled over is a no-op."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE rate_limit_windows SET used_value = MAX(0, used_value - ?) "
+            "WHERE user_id = ? AND provider = ? AND window_start = ?",
+            (amount, user_id, provider, hold["window_start"]),
+        )
+
+
+def rate_limit_summaries() -> list[dict]:
+    with get_conn() as conn:
+        configs = conn.execute(
+            "SELECT user_id, provider, limit_type, limit_value, window_seconds FROM rate_limit_configs"
+        ).fetchall()
+        out = []
+        for c in configs:
+            window_start = _window_start(c["window_seconds"])
+            row = conn.execute(
+                "SELECT used_value FROM rate_limit_windows WHERE user_id = ? AND provider = ? AND window_start = ?",
+                (c["user_id"], c["provider"], window_start),
+            ).fetchone()
+            out.append({
+                "user_id": c["user_id"],
+                "provider": c["provider"],
+                "limit_type": c["limit_type"],
+                "limit_value": c["limit_value"],
+                "window_seconds": c["window_seconds"],
+                "used_value": row["used_value"] if row else 0,
+            })
+        return out
 
 
 def daily_totals() -> list[dict]:

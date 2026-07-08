@@ -14,7 +14,7 @@ status. Update the checkbox here whenever a doc's own `Status:` line changes.
 
 - [x] [Daily spend limits](daily-limits.md) — built
 - [x] [Prepaid credit + reserve/settle](credit-reserve-settle.md) — built
-- [ ] [Per-endpoint rate limiting](rate-limiting.md) — planned, spec'd, not started
+- [x] [Per-endpoint rate limiting](rate-limiting.md) — built
 
 ## Billing / monetization (post-credit follow-ons)
 
@@ -27,7 +27,7 @@ see "Future work" in [credit-reserve-settle.md](credit-reserve-settle.md).
 ## Dashboard
 
 - [x] [Admin dashboard](admin-dashboard.md) — built (per-user table + charts)
-- [ ] Rate-limit config/status section — planned, blocked on rate limiting above
+- [ ] Rate-limit config/status section — not yet added to the dashboard (admin API exists: `/admin/rate-limits`)
 - [ ] Credit balance / reservation view — not yet added to the dashboard (admin API exists: `/admin/credits`)
 
 ## Research & positioning (reference, not features — no checkbox)

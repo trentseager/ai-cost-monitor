@@ -107,6 +107,17 @@ settled to the actual cost once the response comes back, so a burst of
 requests can't collectively overrun the balance before any one of them is
 logged. See `docs/credit-reserve-settle.md` for the full mechanism.
 
+Set a per-endpoint rate limit for a user:
+```
+curl -X POST http://localhost:8000/admin/rate-limits \
+  -H "X-Admin-Key: $PROXY_ADMIN_KEY" -H "content-type: application/json" \
+  -d '{"user_id":"user-123","provider":"anthropic","limit_type":"requests","limit_value":60,"window_seconds":60}'
+```
+`limit_type` is `"requests"` or `"tokens"`. View configured limits + current
+window usage: `GET /admin/rate-limits` (same header). A `(user, provider)`
+pair with no config is unmetered for rate purposes. See
+`docs/rate-limiting.md` for the full mechanism.
+
 ## Known limitations (MVP)
 
 - **No streaming support.** Requests with `"stream": true` are rejected with
@@ -129,5 +140,5 @@ logged. See `docs/credit-reserve-settle.md` for the full mechanism.
 - `main.py` — FastAPI app: the two proxy routes + `/admin/*` endpoints
 - `providers.py` — manifest: upstream URL + usage-extraction per provider
 - `pricing.py` — per-token pricing table + cost calculation
-- `db.py` — SQLite: `requests` log, per-user `limits`, and `credit_balances`/`reservations` for prepaid credit
+- `db.py` — SQLite: `requests` log, per-user `limits`, `credit_balances`/`reservations` for prepaid credit, and `rate_limit_configs`/`rate_limit_windows` for per-endpoint rate limiting
 - `static/index.html` — admin-key-gated dashboard
