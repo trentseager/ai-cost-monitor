@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AI API Cost/Token Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; background: #111; color: #eee; }
+  h1 { font-size: 1.25rem; }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-top: 1.5rem; }
+  canvas { background: #1b1b1b; border-radius: 8px; padding: 1rem; }
+  #empty { color: #888; margin-top: 1rem; }
+</style>
+</head>
+<body>
+  <h1>AI API Cost / Token Monitor</h1>
+  <div id="empty">Loading usage data...</div>
+  <div class="charts">
+    <canvas id="costChart"></canvas>
+    <canvas id="tokensChart"></canvas>
+  </div>
+
+<script>
+async function load() {
+  const res = await fetch('/api/usage');
+  const rows = await res.json();
+  const empty = document.getElementById('empty');
+
+  if (rows.length === 0) {
+    empty.textContent = 'No usage data yet. Run fetch_usage.py once credentials are configured.';
+    return;
+  }
+  empty.remove();
+
+  const byDate = {};
+  for (const r of rows) {
+    byDate[r.date] = byDate[r.date] || { cost: 0, tokens_in: 0, tokens_out: 0 };
+    byDate[r.date].cost += r.cost_usd;
+    byDate[r.date].tokens_in += r.tokens_in;
+    byDate[r.date].tokens_out += r.tokens_out;
+  }
+  const dates = Object.keys(byDate).sort();
+
+  new Chart(document.getElementById('costChart'), {
+    type: 'line',
+    data: {
+      labels: dates,
+      datasets: [{ label: 'Cost (USD)', data: dates.map(d => byDate[d].cost), borderColor: '#6ee7b7' }]
+    },
+    options: { plugins: { title: { display: true, text: 'Spend over time', color: '#eee' } } }
+  });
+
+  new Chart(document.getElementById('tokensChart'), {
+    type: 'bar',
+    data: {
+      labels: dates,
+      datasets: [
+        { label: 'Tokens in', data: dates.map(d => byDate[d].tokens_in), backgroundColor: '#60a5fa' },
+        { label: 'Tokens out', data: dates.map(d => byDate[d].tokens_out), backgroundColor: '#f472b6' }
+      ]
+    },
+    options: { plugins: { title: { display: true, text: 'Tokens over time', color: '#eee' } } }
+  });
+}
+load();
+</script>
+</body>
+</html>
