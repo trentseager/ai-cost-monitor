@@ -16,6 +16,12 @@
   canvas { background: #1b1b1b; border-radius: 8px; padding: 1rem; }
   #status { color: #888; margin-top: 0.5rem; }
   .over { color: #f87171; }
+  h2 { font-size: 1rem; margin-top: 2rem; }
+  .rate-limit-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-top: 0.75rem; }
+  .rate-limit-form input[type=number] { width: 6rem; padding: 0.4rem; background: #1b1b1b; color: #eee; border: 1px solid #333; border-radius: 4px; }
+  select { padding: 0.4rem; background: #1b1b1b; color: #eee; border: 1px solid #333; border-radius: 4px; }
+  #rateLimitStatus { color: #888; margin-top: 0.5rem; }
+  #rateLimitStatus.error { color: #f87171; }
 </style>
 </head>
 <body>
@@ -31,6 +37,28 @@
     <tbody></tbody>
   </table>
 
+  <h2>Rate limits</h2>
+  <form class="rate-limit-form" id="rateLimitForm">
+    <input type="text" id="rlUserId" placeholder="user id" required>
+    <select id="rlProvider">
+      <option value="anthropic">anthropic</option>
+      <option value="openai">openai</option>
+    </select>
+    <select id="rlLimitType">
+      <option value="requests">requests</option>
+      <option value="tokens">tokens</option>
+    </select>
+    <input type="number" id="rlLimitValue" placeholder="limit value" min="1" required>
+    <input type="number" id="rlWindowSeconds" placeholder="window (s)" min="1" required>
+    <button type="submit">Set limit</button>
+  </form>
+  <div id="rateLimitStatus"></div>
+
+  <table id="rateLimitTable" style="display:none">
+    <thead><tr><th>User ID</th><th>Provider</th><th>Type</th><th>Limit</th><th>Window</th><th>Used</th><th>Remaining</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
   <div class="charts">
     <canvas id="costChart"></canvas>
     <canvas id="tokensChart"></canvas>
@@ -38,18 +66,22 @@
 
 <script>
 document.getElementById('loadBtn').addEventListener('click', load);
+document.getElementById('rateLimitForm').addEventListener('submit', submitRateLimit);
+
+let adminKey = '';
 
 async function load() {
-  const key = document.getElementById('adminKey').value;
+  adminKey = document.getElementById('adminKey').value;
   const status = document.getElementById('status');
-  const headers = { 'X-Admin-Key': key };
+  const headers = { 'X-Admin-Key': adminKey };
 
-  const [usersRes, totalsRes] = await Promise.all([
+  const [usersRes, totalsRes, rateLimitsRes] = await Promise.all([
     fetch('/admin/usage', { headers }),
     fetch('/admin/daily-totals', { headers }),
+    fetch('/admin/rate-limits', { headers }),
   ]);
 
-  if (usersRes.status === 401 || totalsRes.status === 401) {
+  if (usersRes.status === 401 || totalsRes.status === 401 || rateLimitsRes.status === 401) {
     status.textContent = 'Invalid admin key.';
     return;
   }
@@ -57,9 +89,72 @@ async function load() {
   status.textContent = '';
   const users = await usersRes.json();
   const totals = await totalsRes.json();
+  const rateLimits = await rateLimitsRes.json();
 
   renderUserTable(users);
   renderCharts(totals);
+  renderRateLimitTable(rateLimits);
+}
+
+async function loadRateLimits() {
+  const res = await fetch('/admin/rate-limits', { headers: { 'X-Admin-Key': adminKey } });
+  if (!res.ok) return;
+  renderRateLimitTable(await res.json());
+}
+
+async function submitRateLimit(e) {
+  e.preventDefault();
+  const rlStatus = document.getElementById('rateLimitStatus');
+  rlStatus.textContent = '';
+  rlStatus.classList.remove('error');
+
+  const payload = {
+    user_id: document.getElementById('rlUserId').value,
+    provider: document.getElementById('rlProvider').value,
+    limit_type: document.getElementById('rlLimitType').value,
+    limit_value: Number(document.getElementById('rlLimitValue').value),
+    window_seconds: Number(document.getElementById('rlWindowSeconds').value),
+  };
+
+  const res = await fetch('/admin/rate-limits', {
+    method: 'POST',
+    headers: { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    rlStatus.textContent = body.detail || `Request failed (${res.status})`;
+    rlStatus.classList.add('error');
+    return;
+  }
+
+  await loadRateLimits();
+}
+
+function renderRateLimitTable(configs) {
+  const table = document.getElementById('rateLimitTable');
+  const tbody = table.querySelector('tbody');
+  tbody.innerHTML = '';
+  if (configs.length === 0) {
+    table.style.display = 'none';
+    return;
+  }
+  table.style.display = '';
+  for (const c of configs) {
+    const remaining = c.limit_value - c.used_value;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${c.user_id}</td>
+      <td>${c.provider}</td>
+      <td>${c.limit_type}</td>
+      <td>${c.limit_value}</td>
+      <td>${c.window_seconds}s</td>
+      <td>${c.used_value}</td>
+      <td class="${remaining <= 0 ? 'over' : ''}">${remaining}</td>
+    `;
+    tbody.appendChild(tr);
+  }
 }
 
 function renderUserTable(users) {
