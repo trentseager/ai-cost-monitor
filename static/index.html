@@ -7,62 +7,107 @@
 <style>
   body { font-family: system-ui, sans-serif; margin: 2rem; background: #111; color: #eee; }
   h1 { font-size: 1.25rem; }
+  .keybar { display: flex; gap: 0.5rem; margin: 1rem 0; }
+  input[type=password], input[type=text] { padding: 0.4rem; background: #1b1b1b; color: #eee; border: 1px solid #333; border-radius: 4px; }
+  button { padding: 0.4rem 0.8rem; cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+  th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #333; }
   .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-top: 1.5rem; }
   canvas { background: #1b1b1b; border-radius: 8px; padding: 1rem; }
-  #empty { color: #888; margin-top: 1rem; }
+  #status { color: #888; margin-top: 0.5rem; }
+  .over { color: #f87171; }
 </style>
 </head>
 <body>
   <h1>AI API Cost / Token Monitor</h1>
-  <div id="empty">Loading usage data...</div>
+  <div class="keybar">
+    <input type="password" id="adminKey" placeholder="admin key">
+    <button id="loadBtn">Load</button>
+  </div>
+  <div id="status"></div>
+
+  <table id="userTable" style="display:none">
+    <thead><tr><th>User ID</th><th>Spent today</th><th>Daily limit</th><th>Remaining</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
   <div class="charts">
     <canvas id="costChart"></canvas>
     <canvas id="tokensChart"></canvas>
   </div>
 
 <script>
-async function load() {
-  const res = await fetch('/api/usage');
-  const rows = await res.json();
-  const empty = document.getElementById('empty');
+document.getElementById('loadBtn').addEventListener('click', load);
 
-  if (rows.length === 0) {
-    empty.textContent = 'No usage data yet. Run fetch_usage.py once credentials are configured.';
+async function load() {
+  const key = document.getElementById('adminKey').value;
+  const status = document.getElementById('status');
+  const headers = { 'X-Admin-Key': key };
+
+  const [usersRes, totalsRes] = await Promise.all([
+    fetch('/admin/usage', { headers }),
+    fetch('/admin/daily-totals', { headers }),
+  ]);
+
+  if (usersRes.status === 401 || totalsRes.status === 401) {
+    status.textContent = 'Invalid admin key.';
     return;
   }
-  empty.remove();
 
-  const byDate = {};
-  for (const r of rows) {
-    byDate[r.date] = byDate[r.date] || { cost: 0, tokens_in: 0, tokens_out: 0 };
-    byDate[r.date].cost += r.cost_usd;
-    byDate[r.date].tokens_in += r.tokens_in;
-    byDate[r.date].tokens_out += r.tokens_out;
+  status.textContent = '';
+  const users = await usersRes.json();
+  const totals = await totalsRes.json();
+
+  renderUserTable(users);
+  renderCharts(totals);
+}
+
+function renderUserTable(users) {
+  const table = document.getElementById('userTable');
+  const tbody = table.querySelector('tbody');
+  tbody.innerHTML = '';
+  if (users.length === 0) {
+    table.style.display = 'none';
+    return;
   }
-  const dates = Object.keys(byDate).sort();
+  table.style.display = '';
+  for (const u of users) {
+    const remaining = u.daily_limit_usd - u.spent_today;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${u.user_id}</td>
+      <td>$${u.spent_today.toFixed(4)}</td>
+      <td>$${u.daily_limit_usd.toFixed(4)}</td>
+      <td class="${remaining <= 0 ? 'over' : ''}">$${remaining.toFixed(4)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
 
-  new Chart(document.getElementById('costChart'), {
+let costChart, tokensChart;
+function renderCharts(totals) {
+  const dates = totals.map(t => t.date);
+  if (costChart) costChart.destroy();
+  if (tokensChart) tokensChart.destroy();
+
+  costChart = new Chart(document.getElementById('costChart'), {
     type: 'line',
-    data: {
-      labels: dates,
-      datasets: [{ label: 'Cost (USD)', data: dates.map(d => byDate[d].cost), borderColor: '#6ee7b7' }]
-    },
+    data: { labels: dates, datasets: [{ label: 'Cost (USD)', data: totals.map(t => t.cost_usd), borderColor: '#6ee7b7' }] },
     options: { plugins: { title: { display: true, text: 'Spend over time', color: '#eee' } } }
   });
 
-  new Chart(document.getElementById('tokensChart'), {
+  tokensChart = new Chart(document.getElementById('tokensChart'), {
     type: 'bar',
     data: {
       labels: dates,
       datasets: [
-        { label: 'Tokens in', data: dates.map(d => byDate[d].tokens_in), backgroundColor: '#60a5fa' },
-        { label: 'Tokens out', data: dates.map(d => byDate[d].tokens_out), backgroundColor: '#f472b6' }
+        { label: 'Tokens in', data: totals.map(t => t.tokens_in), backgroundColor: '#60a5fa' },
+        { label: 'Tokens out', data: totals.map(t => t.tokens_out), backgroundColor: '#f472b6' }
       ]
     },
     options: { plugins: { title: { display: true, text: 'Tokens over time', color: '#eee' } } }
   });
 }
-load();
 </script>
 </body>
 </html>
