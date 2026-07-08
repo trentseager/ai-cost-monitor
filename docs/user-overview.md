@@ -1,6 +1,6 @@
 # Users Overview (Dashboard)
 
-**Status: planned — not yet implemented**
+**Status: built** (`db.py`, `main.py`, `static/index.html`)
 
 Spec for a directory/reporting view on top of the existing
 [[admin-dashboard]], aimed at both team and solo-indie usage: today the
@@ -82,3 +82,41 @@ sensibly relative to actual behavior.
   rate-limit response headers) is explicitly out of scope here — a
   separate, larger feature if wanted later. This section only reports
   usage against limits the admin has configured in this tool.
+
+## Decisions made during implementation
+
+- `user_overview()` is one query built as a CTE: a `known_users` union of
+  distinct `user_id` across `requests`/`limits`/`credit_balances`/
+  `rate_limit_configs`, left-joined against per-user aggregates (today's
+  stats, 7d window, 30d window) and against `limits`/`user_labels` — so a
+  user with zero requests (config-only) still gets a full row of
+  zeros/nulls rather than being dropped by an inner join.
+- `GET /admin/usage` and `user_summaries_today()` were **not removed** —
+  nothing calls for deleting existing API surface, and `/admin/credits`
+  (also currently unused by the dashboard) is kept around the same way.
+  Only the dashboard's fetch target changed, from `/admin/usage` to
+  `/admin/users`.
+- The label `<input>`'s value is set via the DOM `.value` property
+  (`document.createElement` + assignment), not interpolated into an HTML
+  attribute string — an admin-entered label containing a `"` would
+  otherwise break out of the attribute and, since labels get re-rendered
+  on every table refresh, create a stored-injection path. Every other
+  field in this table is still plain template-string interpolation,
+  consistent with the rest of the file — only the label needed this
+  because it's the one genuinely free-text, admin-controlled value.
+
+## Verified behavior (manual test pass, mocked upstream)
+
+- A user with no `limits` row (only ever made a proxied request) appears
+  in `GET /admin/users` with `daily_limit_usd: null`.
+- 7d/30d averages hand-verified against backdated `requests` rows (a $1
+  today + $2 three days ago + $5 ten days ago row set): 7d avg correctly
+  excludes the 10-day-old row, 30d avg correctly includes all three,
+  both divide by the full window size.
+- Setting a label, then setting it again with a new value, updates the
+  same row in place (`user_labels` upsert) rather than duplicating.
+- A user blocked by the daily limit shows `blocked_today` incremented with
+  `spent_today` unaffected (blocked requests log `$0`/`blocked=True`, same
+  as documented in [[daily-limits]]).
+- Bad admin key → `401` on both `GET /admin/users` and
+  `POST /admin/users/label`.

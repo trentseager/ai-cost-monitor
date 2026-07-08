@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS rate_limit_windows (
     used_value INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, provider, window_start)
 );
+
+CREATE TABLE IF NOT EXISTS user_labels (
+    user_id TEXT PRIMARY KEY,
+    label TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -311,6 +316,75 @@ def rate_limit_summaries() -> list[dict]:
                 "used_value": row["used_value"] if row else 0,
             })
         return out
+
+
+def set_user_label(user_id: str, label: str):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_labels (user_id, label) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET label = excluded.label
+            """,
+            (user_id, label),
+        )
+
+
+def user_overview() -> list[dict]:
+    """One row per known user (anyone with a request, or a row in
+    limits/credit_balances/rate_limit_configs), with today's spend,
+    trailing 7d/30d average daily spend, and request/block counts.
+    Averages are calendar-day bucketed and divide by the full window size
+    (idle days count as $0), including today's partial day as-is — see
+    docs/user-overview.md."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            WITH known_users AS (
+                SELECT user_id FROM requests
+                UNION SELECT user_id FROM limits
+                UNION SELECT user_id FROM credit_balances
+                UNION SELECT user_id FROM rate_limit_configs
+            ),
+            today_stats AS (
+                SELECT user_id,
+                       SUM(CASE WHEN blocked = 0 THEN cost_usd ELSE 0 END) AS spent_today,
+                       COUNT(*) AS requests_today,
+                       SUM(CASE WHEN blocked = 1 THEN 1 ELSE 0 END) AS blocked_today
+                FROM requests
+                WHERE date(ts) = date('now')
+                GROUP BY user_id
+            ),
+            last7 AS (
+                SELECT user_id, SUM(cost_usd) AS cost_7d
+                FROM requests
+                WHERE blocked = 0 AND date(ts) >= date('now', '-6 days')
+                GROUP BY user_id
+            ),
+            last30 AS (
+                SELECT user_id, SUM(cost_usd) AS cost_30d
+                FROM requests
+                WHERE blocked = 0 AND date(ts) >= date('now', '-29 days')
+                GROUP BY user_id
+            )
+            SELECT
+                ku.user_id AS user_id,
+                COALESCE(ul.label, '') AS label,
+                COALESCE(ts.spent_today, 0) AS spent_today,
+                l.daily_limit_usd AS daily_limit_usd,
+                COALESCE(l7.cost_7d, 0) / 7.0 AS avg_daily_cost_7d,
+                COALESCE(l30.cost_30d, 0) / 30.0 AS avg_daily_cost_30d,
+                COALESCE(ts.requests_today, 0) AS requests_today,
+                COALESCE(ts.blocked_today, 0) AS blocked_today
+            FROM known_users ku
+            LEFT JOIN user_labels ul ON ul.user_id = ku.user_id
+            LEFT JOIN limits l ON l.user_id = ku.user_id
+            LEFT JOIN today_stats ts ON ts.user_id = ku.user_id
+            LEFT JOIN last7 l7 ON l7.user_id = ku.user_id
+            LEFT JOIN last30 l30 ON l30.user_id = ku.user_id
+            ORDER BY spent_today DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def daily_totals() -> list[dict]:

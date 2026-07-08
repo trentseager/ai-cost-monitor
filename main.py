@@ -12,7 +12,8 @@ from pydantic import BaseModel
 from db import (
     add_credit, credit_summaries, daily_totals, get_limit, get_rate_limit_config, has_credit_metering,
     init_db, log_request, rate_limit_summaries, release_rate_limit, release_reservation, reserve_credit,
-    reserve_rate_limit, set_limit, set_rate_limit, settle_reservation, today_cost_for_user, user_summaries_today,
+    reserve_rate_limit, set_limit, set_rate_limit, set_user_label, settle_reservation, today_cost_for_user,
+    user_overview, user_summaries_today,
 )
 from pricing import estimate_cost
 from providers import PROVIDERS, FALLBACK_MAX_OUTPUT_TOKENS
@@ -232,3 +233,19 @@ def admin_set_rate_limit(payload: RateLimitIn, _: None = Depends(require_admin))
 @app.get("/admin/rate-limits")
 def admin_rate_limits(_: None = Depends(require_admin)):
     return rate_limit_summaries()
+
+
+class UserLabelIn(BaseModel):
+    user_id: str
+    label: str
+
+
+@app.get("/admin/users")
+def admin_users(_: None = Depends(require_admin)):
+    return user_overview()
+
+
+@app.post("/admin/users/label")
+def admin_set_user_label(payload: UserLabelIn, _: None = Depends(require_admin)):
+    set_user_label(payload.user_id, payload.label)
+    return {"ok": True}
