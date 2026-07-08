@@ -22,6 +22,20 @@ CREATE TABLE IF NOT EXISTS limits (
     user_id TEXT PRIMARY KEY,
     daily_limit_usd REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS credit_balances (
+    user_id TEXT PRIMARY KEY,
+    balance_usd REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS reservations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL DEFAULT (datetime('now')),
+    user_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    reserved_usd REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+);
 """
 
 
@@ -93,6 +107,98 @@ def user_summaries_today() -> list[dict]:
                    ), 0) AS spent_today
             FROM limits l
             ORDER BY spent_today DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def has_credit_metering(user_id: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute("SELECT 1 FROM credit_balances WHERE user_id = ?", (user_id,)).fetchone()
+        return row is not None
+
+
+def add_credit(user_id: str, amount_usd: float):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO credit_balances (user_id, balance_usd) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET balance_usd = balance_usd + excluded.balance_usd
+            """,
+            (user_id, amount_usd),
+        )
+
+
+def _release_stale_reservations(conn, user_id: str, older_than_minutes: int = 30):
+    rows = conn.execute(
+        "SELECT id, reserved_usd FROM reservations "
+        "WHERE user_id = ? AND status = 'pending' AND ts < datetime('now', ?)",
+        (user_id, f"-{older_than_minutes} minutes"),
+    ).fetchall()
+    for r in rows:
+        conn.execute("UPDATE credit_balances SET balance_usd = balance_usd + ? WHERE user_id = ?",
+                     (r["reserved_usd"], user_id))
+        conn.execute("UPDATE reservations SET status = 'released' WHERE id = ?", (r["id"],))
+
+
+def reserve_credit(user_id: str, provider: str, reserved_usd: float) -> int | None:
+    """Atomically reserve `reserved_usd` against the user's balance.
+    Returns the reservation id, or None if the balance is insufficient."""
+    with get_conn() as conn:
+        _release_stale_reservations(conn, user_id)
+        cur = conn.execute(
+            "UPDATE credit_balances SET balance_usd = balance_usd - ? WHERE user_id = ? AND balance_usd >= ?",
+            (reserved_usd, user_id, reserved_usd),
+        )
+        if cur.rowcount == 0:
+            return None
+        ins = conn.execute(
+            "INSERT INTO reservations (user_id, provider, reserved_usd, status) VALUES (?, ?, ?, 'pending')",
+            (user_id, provider, reserved_usd),
+        )
+        return ins.lastrowid
+
+
+def settle_reservation(reservation_id: int, actual_cost_usd: float):
+    """Release the reservation, deduct the actual cost, and refund the difference."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id, reserved_usd FROM reservations WHERE id = ? AND status = 'pending'",
+            (reservation_id,),
+        ).fetchone()
+        if row is None:
+            return
+        refund = row["reserved_usd"] - actual_cost_usd
+        conn.execute("UPDATE credit_balances SET balance_usd = balance_usd + ? WHERE user_id = ?",
+                     (refund, row["user_id"]))
+        conn.execute("UPDATE reservations SET status = 'settled' WHERE id = ?", (reservation_id,))
+
+
+def release_reservation(reservation_id: int):
+    """Refund a reservation in full (used when the upstream call produced no billable usage)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id, reserved_usd FROM reservations WHERE id = ? AND status = 'pending'",
+            (reservation_id,),
+        ).fetchone()
+        if row is None:
+            return
+        conn.execute("UPDATE credit_balances SET balance_usd = balance_usd + ? WHERE user_id = ?",
+                     (row["reserved_usd"], row["user_id"]))
+        conn.execute("UPDATE reservations SET status = 'released' WHERE id = ?", (reservation_id,))
+
+
+def credit_summaries() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT cb.user_id AS user_id, cb.balance_usd AS balance_usd,
+                   COALESCE((
+                       SELECT SUM(r.reserved_usd) FROM reservations r
+                       WHERE r.user_id = cb.user_id AND r.status = 'pending'
+                   ), 0) AS pending_reserved_usd
+            FROM credit_balances cb
+            ORDER BY cb.balance_usd ASC
             """
         ).fetchall()
         return [dict(r) for r in rows]

@@ -1,6 +1,6 @@
 # Prepaid Credit + Reserve/Settle
 
-**Status: planned — not yet implemented**
+**Status: built** (`db.py`, `main.py`, `providers.py`)
 
 Spec for the first of three automation gaps identified in
 [[billing-pain-points]]. This is additive to, not a replacement for, the
@@ -83,25 +83,38 @@ unmetered" in [[daily-limits]].
   reservations, mirroring `user_summaries_today()`'s shape in
   [[daily-limits]].
 
-## Open questions (not yet decided)
+## Decisions made during implementation
 
-- **Block status code**: reuse `429` for consistency with the daily-limit
-  block, or use `402 Payment Required` since this is specifically an
-  out-of-credit condition rather than a rate/quota cutoff. Leaning `402` —
-  more semantically correct and lets a caller's SDK/error handling
-  distinguish "you're out of prepaid credit" from "you're rate limited" or
-  "you hit your daily cap" — but not decided.
-- **Fallback output-token ceiling** when a request omits `max_tokens`:
-  a fixed operator-configurable default, or a per-model default from the
-  provider's own documented max.
-- **Stale/abandoned reservations**: what reaps a `pending` reservation that
-  never settles because the proxy crashed mid-request (e.g. a sweep that
-  releases anything `pending` older than N minutes). Needed for
-  correctness, not needed to prove the mechanism out.
-- **Input token counting accuracy**: exact tokenizer per provider/model vs.
-  a cheaper character-based estimate. Only affects how conservative the
-  reservation is, not the correctness of the settle step (settle always
-  uses actual usage).
+- **Block status code: `402 Payment Required`** — distinct from the daily
+  limit's `429`, since this is specifically an out-of-credit condition, not
+  a rate/quota cutoff. Also used when a request's model has no known
+  pricing (`pricing.py`) and a reservation can't be safely sized — blocking
+  is the safe default for a credit-metered user rather than letting an
+  unpriced request through unreserved.
+- **Fallback output-token ceiling**: `CREDIT_FALLBACK_MAX_TOKENS` env var,
+  default `4096`, used only when a request omits `max_tokens` (Anthropic's
+  Messages API requires it on every request, so this only ever applies to
+  OpenAI in practice). See `providers.FALLBACK_MAX_OUTPUT_TOKENS`.
+- **Stale/abandoned reservations**: swept lazily, scoped to the current
+  user, inside `reserve_credit()` itself (`db._release_stale_reservations`,
+  30-minute cutoff) — no background worker needed, and it only ever touches
+  the user currently making a request.
+- **Input token counting**: cheap chars/4 estimate (`providers._estimate_input_tokens`),
+  summed across `system` + all `messages` text content. Confirmed by design
+  that this only affects how conservative the reservation is — the settle
+  step always uses the provider's actual reported usage, so estimate error
+  can't cause incorrect billing, only a slightly off reservation hold.
+
+## Verified behavior (manual test pass, mocked upstream)
+
+- Reserve → settle at a lower actual cost refunds the difference correctly.
+- Reserve → insufficient balance on a second request is rejected with `402`
+  and no partial reservation leaks.
+- Zero balance → `402`, balance left untouched.
+- Unknown model pricing → `402`, no reservation created, balance untouched.
+- Daily limit (if set) is still checked *before* the credit check — a user
+  blocked by the daily limit never reaches the credit logic, confirming the
+  two mechanisms are layered as designed, not one replacing the other.
 
 ## Future work (after this spec is built and functional — do not start early)
 

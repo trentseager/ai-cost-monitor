@@ -92,6 +92,21 @@ View daily aggregate totals (for charts): `GET /admin/daily-totals`.
 
 A user with no limit set is unmetered (never blocked, still logged).
 
+Top up a user's prepaid credit balance:
+```
+curl -X POST http://localhost:8000/admin/credits \
+  -H "X-Admin-Key: $PROXY_ADMIN_KEY" -H "content-type: application/json" \
+  -d '{"user_id":"user-123","amount_usd":10.00}'
+```
+View per-user credit balances: `GET /admin/credits` (same header).
+
+A user with no credit balance set is not credit-metered — only their daily
+limit (if any) applies. When a user *is* credit-metered, the worst-case cost
+of each request is reserved against their balance before it's forwarded and
+settled to the actual cost once the response comes back, so a burst of
+requests can't collectively overrun the balance before any one of them is
+logged. See `docs/credit-reserve-settle.md` for the full mechanism.
+
 ## Known limitations (MVP)
 
 - **No streaming support.** Requests with `"stream": true` are rejected with
@@ -114,5 +129,5 @@ A user with no limit set is unmetered (never blocked, still logged).
 - `main.py` — FastAPI app: the two proxy routes + `/admin/*` endpoints
 - `providers.py` — manifest: upstream URL + usage-extraction per provider
 - `pricing.py` — per-token pricing table + cost calculation
-- `db.py` — SQLite: `requests` log + per-user `limits`
+- `db.py` — SQLite: `requests` log, per-user `limits`, and `credit_balances`/`reservations` for prepaid credit
 - `static/index.html` — admin-key-gated dashboard

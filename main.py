@@ -9,9 +9,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from db import daily_totals, get_limit, init_db, log_request, set_limit, today_cost_for_user, user_summaries_today
+from db import (
+    add_credit, credit_summaries, daily_totals, get_limit, has_credit_metering, init_db,
+    log_request, release_reservation, reserve_credit, set_limit, settle_reservation,
+    today_cost_for_user, user_summaries_today,
+)
 from pricing import estimate_cost
-from providers import PROVIDERS
+from providers import PROVIDERS, FALLBACK_MAX_OUTPUT_TOKENS
 
 load_dotenv()
 
@@ -62,12 +66,33 @@ async def _proxy_request(provider: str, request: Request) -> Response:
             log_request(user_id, provider, body_json.get("model", "unknown"), 0, 0, 0.0, blocked=True, pricing_known=True)
             raise HTTPException(429, f"daily limit reached (${spent:.4f} spent of ${limit:.4f})")
 
+    # Prepaid credit: reserve the worst-case cost before forwarding, settle
+    # to the actual cost once the response comes back. See
+    # docs/credit-reserve-settle.md. Layered on top of the daily limit above,
+    # not a replacement for it.
+    reservation_id = None
+    request_model = body_json.get("model", "unknown")
+    if has_credit_metering(user_id):
+        tokens_in_estimate = cfg["estimate_input_tokens"](body_json)
+        tokens_out_ceiling = body_json.get("max_tokens") or FALLBACK_MAX_OUTPUT_TOKENS
+        reserved_cost, pricing_known = estimate_cost(provider, request_model, tokens_in_estimate, tokens_out_ceiling)
+        if not pricing_known:
+            log_request(user_id, provider, request_model, 0, 0, 0.0, blocked=True, pricing_known=False)
+            raise HTTPException(402, f"cannot reserve credit: no known pricing for model '{request_model}'")
+
+        reservation_id = reserve_credit(user_id, provider, reserved_cost)
+        if reservation_id is None:
+            log_request(user_id, provider, request_model, 0, 0, 0.0, blocked=True, pricing_known=True)
+            raise HTTPException(402, f"insufficient credit: need ${reserved_cost:.4f} reserved")
+
     forward_headers = {k: v for k, v in request.headers.items() if k.lower() not in STRIPPED_HEADERS}
 
     async with httpx.AsyncClient(timeout=120) as client:
         try:
             upstream = await client.post(cfg["upstream_url"], content=body_bytes, headers=forward_headers)
         except httpx.HTTPError as e:
+            if reservation_id is not None:
+                release_reservation(reservation_id)
             raise HTTPException(502, f"upstream request failed: {e}")
 
     try:
@@ -75,12 +100,17 @@ async def _proxy_request(provider: str, request: Request) -> Response:
     except ValueError:
         resp_json = None
 
-    if resp_json is not None:
-        extracted = cfg["extract_usage"](resp_json)
-        if extracted:
-            model, tokens_in, tokens_out = extracted
-            cost, known = estimate_cost(provider, model, tokens_in, tokens_out)
-            log_request(user_id, provider, model, tokens_in, tokens_out, cost, blocked=False, pricing_known=known)
+    extracted = cfg["extract_usage"](resp_json) if resp_json is not None else None
+    if extracted:
+        model, tokens_in, tokens_out = extracted
+        cost, known = estimate_cost(provider, model, tokens_in, tokens_out)
+        log_request(user_id, provider, model, tokens_in, tokens_out, cost, blocked=False, pricing_known=known)
+        if reservation_id is not None:
+            settle_reservation(reservation_id, cost)
+    elif reservation_id is not None:
+        # No usage came back (upstream error/malformed response) — no
+        # billable work happened, so refund the reservation in full.
+        release_reservation(reservation_id)
 
     return Response(
         content=upstream.content,
@@ -124,3 +154,19 @@ def admin_usage(_: None = Depends(require_admin)):
 @app.get("/admin/daily-totals")
 def admin_daily_totals(_: None = Depends(require_admin)):
     return daily_totals()
+
+
+class CreditIn(BaseModel):
+    user_id: str
+    amount_usd: float
+
+
+@app.post("/admin/credits")
+def admin_add_credit(payload: CreditIn, _: None = Depends(require_admin)):
+    add_credit(payload.user_id, payload.amount_usd)
+    return {"ok": True}
+
+
+@app.get("/admin/credits")
+def admin_credits(_: None = Depends(require_admin)):
+    return credit_summaries()
