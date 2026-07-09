@@ -27,6 +27,15 @@ below are now unblocked, not yet started.
 - [ ] Stripe Meters API sync — not yet spec'd as its own doc
 - [ ] Unified per-customer cost ledger across providers — not yet spec'd as its own doc
 
+## Onboarding / integration friction
+
+Reduce the setup work a founder needs to do before a new customer is
+actually protected. Other candidates discussed but not yet prioritized: an
+SDK wrapper package (auto-inject `X-User-Id` instead of manual header
+work at every call site), an integration quickstart doc.
+
+- [ ] [Default daily limit for new users](default-daily-limit.md) — planned
+
 ## Dashboard
 
 - [x] [Admin dashboard](admin-dashboard.md) — built (per-user table + charts)
